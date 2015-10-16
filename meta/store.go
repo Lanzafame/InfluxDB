@@ -388,8 +388,10 @@ func (s *Store) joinCluster() error {
 }
 
 func (s *Store) enableLocalRaft() error {
+	s.Logger.Printf("enableLocalRaft obtaining lock %s", s.Addr.String())
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.Logger.Printf("enableLocalRaft obtained lock %s", s.Addr.String())
 
 	if _, ok := s.raftState.(*localRaft); ok {
 		return nil
@@ -429,10 +431,6 @@ func (s *Store) promoteRandomNodeToPeerCheck() {
 		if s.IsLeader() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-
-			if s.raftState == nil {
-				continue
-			}
 
 			peers, err := s.raftState.peers()
 			if err != nil {
@@ -483,8 +481,9 @@ func (s *Store) enableLocalRaftCheck() {
 			s.Logger.Println("exiting enableLocalRaftCheck")
 			return
 		}
-		s.Logger.Printf("enableLocalRaftIfNecessary s.Peers() check incoming %s", s.Addr.String())
+		s.Logger.Printf("enableLocalRaftCheck s.Peers() check incoming %s", s.Addr.String())
 		peers, err := s.Peers()
+		s.Logger.Printf("enableLocalRaftCheck s.Peers() check successful %s", s.Addr.String())
 		if err != nil {
 			s.Logger.Println(err)
 			continue
@@ -582,9 +581,15 @@ func (s *Store) close() error {
 
 	// Notify goroutines of close.
 	close(s.closing)
-	// FIXME(benbjohnson): s.wg.Wait()
+
+	// Close our exec listener
+	s.ExecListener.Close()
+
+	// Close our RPC listener
+	s.RPCListener.Close()
+
 	s.Logger.Printf("waiting for go routines to close %s", s.Addr.String())
-	//s.wg.Wait()
+	s.wg.Wait()
 
 	if s.raftState != nil {
 		s.raftState.close()
@@ -739,10 +744,7 @@ func (s *Store) AddPeer(addr string) error {
 func (s *Store) Peers() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.raftState != nil {
-		return s.raftState.peers()
-	}
-	return []string{}, fmt.Errorf("no peers")
+	return s.raftState.peers()
 }
 
 // serveExecListener processes remote exec connections.
@@ -751,18 +753,19 @@ func (s *Store) serveExecListener() {
 	defer s.wg.Done()
 
 	for {
+		// Accept next TCP connection.
+		var err error
+		conn, err := s.ExecListener.Accept()
 		select {
 		case <-s.closing:
-			s.Logger.Println("exiting serveExecListener")
+			s.Logger.Printf("shutting down Execlistener for %s", s.Addr.String())
 			return
 		default:
 		}
 
-		// Accept next TCP connection.
-		conn, err := s.ExecListener.Accept()
 		if err != nil {
 			if strings.Contains(err.Error(), "connection closed") {
-				return
+				continue
 			}
 			s.Logger.Printf("temporary accept error: %s", err)
 			continue
@@ -772,6 +775,7 @@ func (s *Store) serveExecListener() {
 		s.wg.Add(1)
 		go s.handleExecConn(conn)
 	}
+
 }
 
 // handleExecConn reads a command from the connection and executes it.
@@ -864,7 +868,7 @@ func (s *Store) serveRPCListener() {
 	for {
 		select {
 		case <-s.closing:
-			s.Logger.Println("exiting serveRPCListener")
+			s.Logger.Printf("shutting down RPClistener for %s", s.Addr.String())
 			return
 		default:
 		}
