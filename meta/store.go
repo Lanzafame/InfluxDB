@@ -424,16 +424,18 @@ func (s *Store) promoteRandomNodeToPeerCheck() {
 
 		// Only do this if you are the leader
 		if s.IsLeader() {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			peers, err := s.raftState.peers()
+			peers, err := s.Peers()
 			if err != nil {
 				s.Logger.Println(err)
 				continue
 			}
 
-			nodes := s.data.Nodes
+			nodes, err := s.Nodes()
+			if err != nil {
+				s.Logger.Printf("error retreiving nodes for promoteRandomNodeToPeerCheck: %s", err)
+				continue
+			}
+
 			var nonraft []NodeInfo
 			for _, n := range nodes {
 				if contains(peers, n.Host) {
@@ -447,14 +449,17 @@ func (s *Store) promoteRandomNodeToPeerCheck() {
 				continue
 			}
 
-			// Get a random node
+			//// Get a random node
 			n := nonraft[rand.Intn(len(nonraft))]
 			s.Logger.Printf("attempting to promote node %d addr %s to raft peer", n.ID, n.Host)
+			s.mu.Lock()
 			if err := s.raftState.addPeer(n.Host); err != nil {
 				s.Logger.Printf("error adding raft peer: %s", err)
+				s.mu.Unlock()
 				continue
 			}
 			s.Logger.Printf("promoted node %d addr %s to raft peer", n.ID, n.Host)
+			s.mu.Unlock()
 			continue
 		}
 	}
