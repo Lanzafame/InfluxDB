@@ -91,6 +91,11 @@ func (s *Service) Close() error {
 	return nil
 }
 
+// SetLogger sets the internal logger to the logger passed in.
+func (s *Service) SetLogger(l *log.Logger) {
+	s.Logger = l
+}
+
 func (s *Service) waitForMetaUpdates() {
 	for {
 		err := s.MetaStore.WaitForDataChanged()
