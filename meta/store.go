@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -231,7 +230,6 @@ func (s *Store) Open() error {
 
 		return nil
 	}(); err != nil {
-		s.close()
 		return err
 	}
 
@@ -388,10 +386,8 @@ func (s *Store) joinCluster() error {
 }
 
 func (s *Store) enableLocalRaft() error {
-	s.Logger.Printf("enableLocalRaft obtaining lock %s", s.Addr.String())
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Logger.Printf("enableLocalRaft obtained lock %s", s.Addr.String())
 
 	if _, ok := s.raftState.(*localRaft); ok {
 		return nil
@@ -423,7 +419,6 @@ func (s *Store) promoteRandomNodeToPeerCheck() {
 		select {
 		case <-ticker.C:
 		case <-s.closing:
-			s.Logger.Println("exiting promoteRandomNodeToPeerCheck")
 			return
 		}
 
@@ -478,12 +473,9 @@ func (s *Store) enableLocalRaftCheck() {
 		select {
 		case <-ticker.C:
 		case <-s.closing:
-			s.Logger.Println("exiting enableLocalRaftCheck")
 			return
 		}
-		s.Logger.Printf("enableLocalRaftCheck s.Peers() check incoming %s", s.Addr.String())
 		peers, err := s.Peers()
-		s.Logger.Printf("enableLocalRaftCheck s.Peers() check successful %s", s.Addr.String())
 		if err != nil {
 			s.Logger.Println(err)
 			continue
@@ -583,12 +575,15 @@ func (s *Store) close() error {
 	close(s.closing)
 
 	// Close our exec listener
-	s.ExecListener.Close()
+	if err := s.ExecListener.Close(); err != nil {
+		s.Logger.Printf("error closing ExecListener %s", err)
+	}
 
 	// Close our RPC listener
-	s.RPCListener.Close()
+	if err := s.RPCListener.Close(); err != nil {
+		s.Logger.Printf("error closing ExecListener %s", err)
+	}
 
-	s.Logger.Printf("waiting for go routines to close %s", s.Addr.String())
 	s.wg.Wait()
 
 	if s.raftState != nil {
@@ -713,9 +708,6 @@ func (s *Store) Err() <-chan error { return s.err }
 func (s *Store) IsLeader() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.raftState == nil {
-		return false
-	}
 	return s.raftState.isLeader()
 }
 
@@ -756,16 +748,9 @@ func (s *Store) serveExecListener() {
 		// Accept next TCP connection.
 		var err error
 		conn, err := s.ExecListener.Accept()
-		select {
-		case <-s.closing:
-			s.Logger.Printf("shutting down Execlistener for %s", s.Addr.String())
-			return
-		default:
-		}
-
 		if err != nil {
 			if strings.Contains(err.Error(), "connection closed") {
-				continue
+				return
 			}
 			s.Logger.Printf("temporary accept error: %s", err)
 			continue
@@ -774,8 +759,13 @@ func (s *Store) serveExecListener() {
 		// Handle connection in a separate goroutine.
 		s.wg.Add(1)
 		go s.handleExecConn(conn)
-	}
 
+		select {
+		case <-s.closing:
+			return
+		default:
+		}
+	}
 }
 
 // handleExecConn reads a command from the connection and executes it.
@@ -866,13 +856,6 @@ func (s *Store) serveRPCListener() {
 	defer s.wg.Done()
 
 	for {
-		select {
-		case <-s.closing:
-			s.Logger.Printf("shutting down RPClistener for %s", s.Addr.String())
-			return
-		default:
-		}
-
 		// Accept next TCP connection.
 		conn, err := s.RPCListener.Accept()
 		if err != nil {
@@ -890,6 +873,12 @@ func (s *Store) serveRPCListener() {
 			defer s.wg.Done()
 			s.rpc.handleRPCConn(conn)
 		}()
+
+		select {
+		case <-s.closing:
+			return
+		default:
+		}
 	}
 }
 
@@ -1701,9 +1690,6 @@ func (s *Store) remoteExec(b []byte) error {
 	// Retrieve the current known leader.
 	leader := s.raftState.leader()
 	if leader == "" {
-		s.Logger.Printf("remoteExec raftState has no leader for addr: %s", s.Addr.String())
-		// Lets dump a stack to see what is going on here.
-		debug.PrintStack()
 		return errors.New("no leader detected during remoteExec")
 	}
 
